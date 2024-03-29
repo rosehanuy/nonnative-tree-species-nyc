@@ -4,7 +4,7 @@
 
 ### Data
 
-* Natural Areas Conservancy tree species data: Collected through field survey methods, this dataset identifies the dominant tree species (calculated by proportion of basal area in each plot) in 1,052 plots in forested areas throughout New York City. 
+* [Natural Areas Conservancy](https://naturalareasnyc.org/) tree species data: Collected through field survey methods, this dataset identifies the dominant tree species (calculated by proportion of basal area in each plot) in 1,052 plots in forested areas throughout New York City. 
 * Of these plots, 927 are dominated by a native species and 125 by a nonnative species (see charts below).
 * Satellite data: The 30m resolution Harmonzed Landsat/Sentinel-2 data product was accessed using NASA's Earth Data API. For code used to access and process satellite data, see [this notebook](./R/phenology_metrics.Rmd)
 * Vector data: shapefiles of New York City's parks and boroughs were used to crop the raster data.
