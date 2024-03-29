@@ -4,9 +4,10 @@
 
 ### Data
 
-* [Natural Areas Conservancy](https://naturalareasnyc.org/) tree species data: Collected through field survey methods, this dataset identifies the dominant tree species (calculated by proportion of basal area in each plot) in 1,052 plots in forested areas throughout New York City. 
+* [Natural Areas Conservancy](https://naturalareasnyc.org/) tree species data: Collected through field survey methods, this dataset identifies the dominant tree species (based on proportion of basal area in each plot) in 1,052 plots in forested areas throughout New York City. 
 * Of these plots, 927 are dominated by a native species and 125 by a nonnative species (see charts below).
-* Satellite data: The 30m resolution Harmonzed Landsat/Sentinel-2 data product was accessed using NASA's Earth Data API. For code used to access and process satellite data, see [this notebook](./R/phenology_metrics.Rmd)
+  * The three most common native species are Oak, Sweetgum, and Black Cherry. The three most common nonnative species are Black Locust, Mulberry, and Tree of Heaven.
+* Satellite data: The 30m resolution [Harmonzed Landsat/Sentinel-2 data product](https://lpdaac.usgs.gov/data/get-started-data/collection-overview/missions/harmonized-landsat-sentinel-2-hls-overview/) was accessed using NASA's Earth Data API. For code used to access and process satellite data, see [this notebook](./R/phenology_metrics.Rmd)
 * Vector data: shapefiles of New York City's parks and boroughs were used to crop the raster data.
 
 Sample plots in Pelham Bay Park, one of the forested areas represented in the dataset             |  
@@ -24,7 +25,7 @@ Number of Plots for Each Nonnative Species          |
 
 ### Methods
 
-I trained a series of random forest models to classify forested pixels as either native or nonnative, using individual native species as the native category. Next, I trained a model that used all 43 different native species in the dataset as the native category. My code for this process can be found [here](./R/train_random_forest_models.Rmd)
+I trained a series of random forest models using the `ranger` and `caret` R packages to classify forested pixels as either native or nonnative, using individual native species as the native category. Next, I trained a model that used all 43 different native species in the dataset as the native category. My code for this process can be found [here](./R/train_random_forest_models.Rmd)
 
 To train each model, data were split into training (70%) and testing (30%) subsets. Each model was trained and tested using 10-fold cross-validation. Resampling was conducted within cross-validation using either up-sampling or down-sampling to try and mitigate class imbalance in the training data. 
 
@@ -55,7 +56,7 @@ Number of plots available for each species          |
 
 *All-species Model*
 
-The all-species model had a highly imbalanced training data (927 native vs. 125 nonnative samples). Using resampling techniques, the model can be optimized to maximize either precision or recall, depending on the priorities of the end user.
+The all-species model had highly imbalanced training data (927 native vs. 125 nonnative samples). Using resampling techniques, the model can be optimized to maximize either precision or recall, depending on the priorities of the end user.
 
 Recall shows the percentage of pixels in each category correctly identified by the model. The down-sampled model performs better in this task, correctly identifying about 75% of total pixels in each category. The up-sampled model was able to identify less than 25% of nonnative pixels.
 
@@ -73,7 +74,7 @@ Precision for all-species model using down-sampling (left) or up-sampling (right
 
 *Maps*
 
-This map of Manhattan was produced using the up-sampled all-species model predictions for all pixels with greater than 60% tree canopy. This model is known to predict nonnative pixels with ~60% accuracy, but to identify ~25% of total nonnative pixels present. These maps therefore present a conservative estimate of the presence of nonnatives, but we can be fairly confident that those identified are accurate.
+This map of Manhattan was produced using the up-sampled all-species model predictions for all pixels with greater than 60% tree canopy. This model is known to predict nonnative pixels with ~60% accuracy, but to identify ~25% of total nonnative pixels present. This map therefore presents a conservative estimate of the presence of nonnatives, but we can be fairly confident that those identified are accurate.
 
 ![](./images/mn_map.png)
 
