@@ -1,0 +1,423 @@
+---
+title: "Random Forest Models to Parse Nonnative from Individual Native Species"
+output: html_document
+date: "2024-03-16"
+---
+
+```{r setup, include=FALSE}
+
+library(caret)
+library(sf)
+library(magrittr)
+library(dplyr)
+library(terra)
+library(stars)
+library(here)
+library(tidyr)
+
+here::i_am('R/train_random_forest_models.Rmd')
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+### Plot native species represented in NAC data
+
+```{r}
+# 
+p <- read_sf(here('data','NACPlots_WithInvIndex4.shp')) %>%
+  st_transform(26918)
+
+p <- filter(p,InvIndex!=0)
+
+p <- p %>%
+  mutate(type=case_when(
+    InvIndex==1 ~ 'native',
+    InvIndex==2 ~ 'native',
+    InvIndex==3 ~ 'nonnative',
+    InvIndex==4 ~ 'nonnative'
+  ))
+
+# drop invasive index column
+p <- p[-35,]
+p.summary <- p %>%
+  group_by(type,SPEC1) %>%
+  summarize(num=length(SPEC1)) 
+
+p.summary <- st_drop_geometry(p.summary)
+
+# create dataframe of all native species
+nat <- p.summary[p.summary$type=='native',]
+
+# plot distribution of native species
+ggplot(data=nat,aes(x=reorder(SPEC1,+num),y=num)) +
+  theme_classic() +
+  geom_bar(stat='identity',fill='darkgreen') +
+  xlab('Species') +
+  ylab('Number of Plots') +
+  ggtitle('Native Species') +
+  guides(fill='none') +
+  geom_text(aes(label = num), stat = "identity",vjust=0.35, hjust=-0.25,colour = "black",cex=3) +
+  #scale_x_discrete(guide = guide_axis(angle = 90)) +
+  coord_flip() +
+  theme(axis.text.x=element_text(size=10))
+  
+
+
+#ggsave(here('R','output','native_species2.png'),height=7,width=8,unit='in')
+```
+
+### Read in satellite data and extract values at NAC sample sites
+
+```{r}
+# read in satellite data and extract values at sample sites
+metrics <- read_stars('manhattan_metrics.tif') %>%
+  split()
+
+bands <- read_stars(file.path(here() %>% dirname(),'thesis','data','nyc_data','scheme_2','mn_scheme2.tif')) %>%
+  split()
+
+names(metrics) <- c('sos','eos','los1','los2','los3','peak','pop','av_greenup_diff','av_sen_diff','spring_amp','fall_amp','spring_sd','fall_sd','spring_q1','spring_q2','spring_q3','fall_q1','fall_q2','fall_q3')
+
+
+bands <- bands[c(1:10,21:30),,]
+names(bands) <- c('s.blue','s.green','s.red','s.re1','s.re2','s.re3','s.nir','s.nir08','s.swir1','s.swir2','f.blue','f.green','f.red','f.re1','f.re2','f.re3','f.nir','f.nir08','f.swir1','f.swir2')
+
+bands.w <- st_warp(bands,metrics)
+
+stack <- c(bands.w,metrics)
+
+## Function to extract raster values at given points to data frame
+get_bands_metrics_df <- function(raster,points){
+  raster <- rast(raster)
+df <- terra::extract(raster,points,method='simple',ID=FALSE)
+
+df$species <- points$SPEC1
+df$id <- points$PLOT_ID
+df$inv <-  points$InvIndex
+
+return(df)
+}
+
+df <- get_bands_metrics_df(stack,p1)
+# set variable names
+names(df) <- c('s.blue','s.green','s.red','s.re1','s.re2','s.re3','s.nir','s.nir08','s.swir1','s.swir2','f.blue','f.green','f.red','f.re1','f.re2','f.re3','f.nir','f.nir08','f.swir1','f.swir2','sos','eos','los1','los2','los3','peak','pop','av_greenup_diff','av_sen_diff','spring_amp','fall_amp','spring_sd','fall_sd','spring_q1','spring_q2','spring_q3','fall_q1','fall_q2','fall_q3','species','id','inv')
+```
+
+### Create training datasets and train random forest models
+
+```{r}
+#df <- read.csv(here('R','metrics_springfallbands.csv'))
+
+# drop rows with all NA values
+df.na.omit <- df[rowSums(is.na(df))<39,]
+
+# dataframe of just nonnatives
+nonnative <- filter(df.na.omit, inv==3|inv==4) %>%
+  mutate(type='nonnative') %>%
+  select(-c('inv','id','species'))
+
+# dataframe of just native species
+native <- filter(df.na.omit, inv==1) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+
+# dataframes for specific native species
+
+sweetgum <- filter(df.na.omit,grepl('LIST2',species)) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+  
+oak <- filter(df.na.omit,grepl('QUERCUS',species)) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+
+blackcherry <- filter(df.na.omit,grepl('PRSE2',species)) %>%
+  mutate(type='blackcherry') %>%
+  select(-c('inv','id','species'))
+
+redmaple <- filter(df.na.omit,grepl('ACRU',species)) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+
+tulip <- filter(df.na.omit,grepl('LITU',species)) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+
+hickory <- filter(df.na.omit,grepl('CARYA',species)) %>%
+  mutate(type='hickory') %>%
+  select(-c('inv','id','species'))
+
+# combine dataframes into single training dataset
+df2 <- rbind(nonnative,native) %>%
+  mutate(type= as.factor(type))
+
+
+```
+
+
+```{r}
+# function to train random forest model and output list of performance metrics
+fit_model <- function(sampling,df,species){
+  train.index <- createDataPartition(df$type,p=.7,list=FALSE,times=1)
+  
+  Train <- df[ train.index,]
+  Test  <- df[-train.index,]
+  
+  preprocess = preProcess(Train, method = "bagImpute")
+  Train <- predict(preprocess, Train)
+  Test <- predict(preprocess, Test)
+  
+  if(sampling=='up'){
+  
+      tc <- trainControl(method='repeatedcv',number=10,repeats=10,sampling='up')
+  } else{
+      tc <- trainControl(method='repeatedcv',number=10,repeats=10,sampling='down')
+  }
+  #  w <- ifelse(Train$type == "native",
+  #                       0.5,
+  #                       20)
+  # 
+  # fit <- train(type~.,data=Train,method='ranger', weights=w,
+  #              trControl=trainControl(method='repeatedcv',number=10,repeats=10))
+  fit <- train(type~.,data=Train,method='ranger',importance='impurity',trControl=tc)
+  # fit <- train(type~.,data=Train,method='ranger', metric='Precision',
+  #              trControl=trainControl(method='repeatedcv',number=10,repeats=10,sampling='down',classProbs = TRUE, summaryFunction = pr))
+  
+  prediction <- predict(fit,Test)
+
+  prec.nonnative <- posPredValue(data=prediction,Test$type,positive='nonnative')
+  recall.nonnative <- sensitivity(data=prediction,Test$type,positive='nonnative')
+  f1.nonnative <- (2 * prec.nonnative * recall.nonnative)/(prec.nonnative + recall.nonnative)
+  
+  prec.native<- posPredValue(data=prediction,Test$type,positive=species)
+  recall.native <- sensitivity(data=prediction,Test$type,positive=species)
+  f1.native <- (2 * prec.native * recall.native)/(prec.native + recall.native)
+  
+  
+  return(c(f1.nonnative,f1.native,prec.nonnative,prec.native,recall.nonnative,recall.native))
+  }
+  
+
+```
+
+```{r}
+# create dataframe to hold reuslts
+result.df <- data.frame(matrix(ncol = 8, nrow = 0))
+names(result.df) <- c('data','sampling','f1.non','f1.nat','prec.non','prec.nat','recall.non','recall.nat')
+
+# train models to parse nonnative from individual native species and write results to dataframe
+
+###### red maple #######
+df2 <- rbind(nonnative,redmaple) %>%
+  mutate(type= as.factor(type))
+sampling_method <- 'up'
+
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species='native')
+  results <- list('all native',sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species='native')
+  results <- list('all native',sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+##### sweetgum #####
+df2 <- rbind(nonnative,sweetgum) %>%
+  mutate(type= as.factor(type))
+
+sampling_method <- 'up'
+d <- 'sweetgum'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+#### oak ######
+df2 <- rbind(nonnative,oak) %>%
+  mutate(type= as.factor(type))
+
+sampling_method <- 'up'
+d <- 'oak'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+
+#### black cherry ####
+df2 <- rbind(nonnative,blackcherry) %>%
+  mutate(type= as.factor(type))
+
+sampling_method <- 'up'
+d <- 'blackcherry'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+#### tulip #####
+df2 <- rbind(nonnative,tulip) %>%
+  mutate(type= as.factor(type))
+
+sampling_method <- 'up'
+d <- 'tulip'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+##### hickory #####
+
+df2 <- rbind(nonnative,hickory) %>%
+  mutate(type= as.factor(type))
+
+sampling_method <- 'up'
+d <- 'hickory'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+
+sampling_method <- 'down'
+for (i in 1:5){
+  output <- fit_model(sampling_method,df2,species=d)
+  results <- list(d,sampling_method,output[1],output[2],output[3],output[4],output[5],output[6])
+  result.df <- rbind(result.df,results)
+}
+```
+
+### Summarize and Plot Results
+
+```{r}
+# obtain mean and standard deviation of performance metrics
+result.summary <- result.df %>%
+  group_by(data,sampling) %>%
+  summarize(mean.f1.nat = mean(f1.nat),
+            mean.f1.non = mean(f1.non),
+            mean.prec.nat = mean(prec.nat),
+            mean.recall.nat = mean(recall.nat),
+            mean.prec.non = mean(prec.non),
+            mean.recall.non = mean(recall.non),
+            sd.f1.nat = sd(f1.nat),
+            sd.f1.non = sd(f1.non),
+            sd.prec.nat = sd(prec.nat),
+            sd.recall.nat = sd(recall.nat),
+            sd.prec.non = sd(prec.non),
+            sd.recall.non = sd(recall.non))
+
+#result.summary2 <- filter(result.summary,sampling=='up')
+
+#write.csv(plot.df,here('R','output','combine_summary_results.csv'),row.names=FALSE)
+
+
+# select relevant rows
+plot.df <- result.summary[,c(1,3:4,9:10)]
+
+# format dataframe for ggplot bar chart
+plot.df.pivot <- pivot_longer(result.summary,cols=c(mean.f1.nat,mean.f1.non),names_to=c('type'),values_to = c('f1')) %>%
+                 pivot_longer(cols=c(sd.f1.nat,sd.f1.non),names_to=c('type.sd'),values_to = c('sd')) %>%
+                 pivot_longer(cols=c(mean.prec.nat,mean.prec.non),names_to=c('type.prec'),values_to = c('precision')) %>%
+                pivot_longer(cols=c(mean.recall.nat,mean.recall.non),names_to=c('type.recall'),values_to = c('recall')) %>%
+                pivot_longer(cols=c(sd.prec.nat,sd.prec.non),names_to=c('type.sd.prec'),values_to = c('sd.precision')) %>%
+                pivot_longer(cols=c(sd.recall.nat,sd.recall.non),names_to=c('type.sd.recall'),values_to = c('sd.recall')) 
+
+
+plot.df <- filter(plot.df.pivot,(type=='mean.f1.nat' & type.sd=='sd.f1.nat' & type.prec == 'mean.prec.nat' & type.recall == 'mean.recall.nat'& type.sd.prec == 'sd.prec.nat' & type.sd.recall == 'sd.recall.nat'   )|(type=='mean.f1.non' & type.sd=='sd.f1.non' & type.prec == 'mean.prec.non' & type.recall == 'mean.recall.non' & type.sd.prec == 'sd.prec.non' & type.sd.recall == 'sd.recall.non'))
+
+plot.df <- plot.df[,c(2,3,4,6,8,10,12,14)]
+plot.df$type <- substr(plot.df$type,9,11)
+
+plot.df <- plot.df %>%
+  mutate(type = case_when(
+    type == 'nat' ~ 'Native',
+    type == 'non' ~ 'Nonnative'
+  )
+  )
+
+names(plot.df)[2] <- 'Species Type'
+
+#plot.df <- read.csv(here('R','output','combine_summary_results.csv'))
+
+# plot results
+
+#plot.df2 <- plot.df[c(1,2,7,8,17,18),]
+
+# set y-axis value and titles for plot
+metric = plot.df$precision
+l <- 'Precision'
+t <- 'Precision: All Species Model'
+
+
+ggplot(plot.df,aes(x=as.factor(sampling), fill=`Species Type`)) +
+    geom_bar( aes(y=metric),stat="identity", position=position_dodge(),alpha=0.7,width=0.6) +
+    geom_errorbar(aes(ymin=metric-sd,ymax=metric+sd),width=0.2, colour="black",position=position_dodge(0.6)) +
+  scale_fill_manual(values=c("darkgreen", "#56B4E9")) +
+  ylab(l) +
+  xlab('Resampling Method') +
+  ggtitle(t) +
+  scale_color_manual(labels=c('Native','Nonnative')) +
+  theme_classic()
+
+#ggsave(here('R','output','precision_allspecies_plot.png'),height=5,width=7,units='in')
+```
+
+
+```{r}
+# plot populations of species used to train models
+
+species <- data.frame(species=c('nonnative','sweetgum','tulip','hickory','blackcherry','redmaple','oak'),
+                      pop = c(125,154,55,33,58,45,408))
+
+ggplot(species,aes(x=reorder(species,+pop), y=pop,fill=species)) +
+    geom_bar( stat="identity", position=position_dodge(),alpha=0.7) +
+  scale_fill_manual(values=c("#009E73", "#009E73",'black', "#009E73", "#009E73", "#009E73", "#009E73")) +
+  ylab('Number of Sample Plots') +
+  xlab('Species') +
+  ggtitle('Number of Plots Per Species') +
+  guides(fill='none') +
+  geom_text(aes(label = pop), stat = "identity", vjust = -0.5, colour = "black") +
+  theme_classic()
+
+#ggsave(here('R','output','species_population_plot.png'),height=5,width=7,units='in')
+```
+
+
+

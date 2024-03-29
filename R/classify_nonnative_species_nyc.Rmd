@@ -1,0 +1,272 @@
+---
+title: "Estimating Acreage of Nonnative Species By Borough"
+output: html_document
+date: "2024-03-21"
+---
+
+```{r setup, include=FALSE}
+library(caret)
+library(sf)
+library(magrittr)
+library(dplyr)
+library(terra)
+library(stars)
+library(tmap)
+library(htmlwidgets)
+library(here)
+library(basemaps)
+library(tidyr)
+
+here::i_am('R/classify_nonnative_species_nyc.Rmd')
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+### Create raster stack of input variables cropped to park boundaries
+
+```{r}
+# park boundaries
+pk <- read_sf(here('data','parks.shp')) %>%
+  st_transform(26918)
+
+# boro boundaries
+b <- read_sf(here('data','bb.shp')) %>%
+  filter(boro_name=='Staten Island') %>% ### specify boro you want
+  st_transform(26918)
+
+# filter for parks in given borough
+pk1 <- st_filter(pk,b,.predicate=st_intersects)
+
+metrics <- read_stars('si_metrics.tif') %>%
+  split()
+
+bands <- read_stars(file.path(here() %>% dirname(),'thesis','data','nyc_data','scheme_2','si_scheme2.tif')) %>%
+  split()
+
+names(metrics) <- c('sos','eos','los1','los2','los3','peak','pop','av_greenup_diff','av_sen_diff','spring_amp','fall_amp','spring_sd','fall_sd','spring_q1','spring_q2','spring_q3','fall_q1','fall_q2','fall_q3')
+
+
+bands <- bands[c(1:10,21:30),,]
+names(bands) <- c('s.blue','s.green','s.red','s.re1','s.re2','s.re3','s.nir','s.nir08','s.swir1','s.swir2','f.blue','f.green','f.red','f.re1','f.re2','f.re3','f.nir','f.nir08','f.swir1','f.swir2')
+
+bands.w <- st_warp(bands,metrics)
+
+stack <- c(bands.w,metrics)
+
+stack <- st_crop(stack,pk1)
+
+```
+
+### Create training dataset
+
+```{r}
+df <- read.csv(here('R','metrics_springfallbands.csv'))
+
+df.na.omit <- df[rowSums(is.na(df))<39,]
+
+nonnative <- filter(df.na.omit, inv==3|inv==4) %>%
+  mutate(type='nonnative') %>%
+  select(-c('inv','id','species'))
+
+native <- filter(df.na.omit, inv==1) %>%
+  mutate(type='native') %>%
+  select(-c('inv','id','species'))
+
+df2 <- rbind(nonnative,native) %>%
+  mutate(type= as.factor(type))
+```
+
+### Function to train random forest model according to resampling method and class probability
+
+```{r}
+
+fit_model <- function(m){
+
+  if(m=='prob'){
+  fit <- train(type~.,data=Train,method='ranger',
+               trControl=trainControl(method='repeatedcv',number=10,repeats=10,sampling='up',classProbs=TRUE,summaryFunction = twoClassSummary))
+  }else if(m=='up'){
+  ## up-sample         
+  fit <- train(type~.,data=Train,method='ranger',
+               trControl=trainControl(method='repeatedcv',number=10,repeats=10,sampling='up'))
+  }else if(m=='down'){
+  ## down-sample
+  fit <- train(type~.,data=Train,method='ranger',
+               trControl=trainControl(method='repeatedcv',number=10,repeats=10,sampling='down'))
+  }
+  return(fit)
+}              
+```
+
+### Train model five times and write estimated acres of nonnative species to dataframe
+
+```{r}
+# create empty dataframe to hold results
+count.df <- as.data.frame(matrix(ncol=5,nrow=0))
+names(count.df) <- c('boro','native.30','nonnative.30','native.60','nonnative.60')
+
+boro <- 'Bronx'
+i <- 1
+for(i in 1:5){
+train.index <- createDataPartition(df2$type,p=.7,list=FALSE,times=1)
+
+  Train <- df2[ train.index,]
+  Test  <- df2[-train.index,]
+  
+  preprocess = preProcess(Train, method = "bagImpute")
+  Train <- predict(preprocess, Train)
+  Test <- predict(preprocess, Test)
+  
+fit <- fit_model(m='up')  # use upsampling
+
+pred <- terra::predict(stack, fit$finalModel,
+                              type = "response",
+                              fun = function(model, ...) predict(model, ...)$nonnative)
+
+# set name of attribute
+names(pred) <- c('Species Type')
+
+if(i==1){
+ca <- read_stars(file.path(here() %>% dirname(),'thesis','data','nyc_data','LandsatGrid_PropCanopy2017.tif')) %>%
+  st_transform(26918) %>%
+  st_crop(b)
+
+ca <- st_warp(ca,pred)
+}
+pred[ca<0.3] <- NA  # mask pixels < 30% tree canopy
+native.30 <- 900*(table(pred$`Species Type`)[1])/4047
+nonnative.30 <- 900*(table(pred$`Species Type`)[2])/4047
+
+pred[ca<0.6] <- NA  # mask pixels < 60% tree canopy
+native.60 <- (900*(table(pred$`Species Type`)[1]))/4047
+nonnative.60 <- (900*(table(pred$`Species Type`)[2]))/4047
+
+new_row <- c(boro,native.30,nonnative.30,native.60,nonnative.60)
+counts.df <- rbind(counts.df,new_row)
+i <- i+1
+}
+
+# summarize mean and standard devation of model results
+
+counts.df <- as.data.frame(apply(counts.df[,2:5],2,as.numeric))
+counts.df$boro <- c(rep('Queens',5),rep('Manhattan',5),rep('Brooklyn',5),rep('Bronx',5),rep('Staten Island',5))
+
+
+counts.summary <- counts.df %>%
+  group_by(boro) %>%
+  summarize(mean.native.30 = mean(native.30),
+         mean.nonnative.30 = mean(nonnative.30),
+         mean.native.60 = mean(native.60),
+         mean.nonnative.60 = mean(nonnative.60),
+         sd.native.30 = sd(native.30),
+         sd.nonnative.30 = sd(nonnative.30),
+         sd.native.60 = sd(native.60),
+         sd.nonnative.60 = sd(nonnative.60))
+
+#write.csv(counts.summary,here('R','output','summary_acres_binary.csv'),row.names=FALSE)
+```
+### Plot results of binary model to static map
+
+
+```{r}
+fit <- fit_model(m='up')
+pred <- terra::predict(stack, fit$finalModel,
+                              type = "response",
+                              fun = function(model, ...) predict(model, ...)$nonnative)
+
+# set name of attribute
+names(pred) <- c('Species Type')
+
+
+ca <- read_stars(file.path(here() %>% dirname(),'thesis','data','nyc_data','LandsatGrid_PropCanopy2017.tif')) %>%
+  st_transform(26918) %>%
+  st_crop(b)
+
+ca <- st_warp(ca,pred)
+
+
+bm <- basemap_stars(ext=b,map_service='carto',map_type='light')
+
+t <- tm_shape(bm) +
+  tm_rgb() +
+  tm_shape(pred) + 
+  tm_raster(palette=c('#9BCF53','#FF204E')) +
+  tm_layout(legend.outside=FALSE,
+            legend.frame=TRUE,
+            legend.position = c('left','top'),
+            main.title=boro,
+            main.title.position='center',
+            main.title.size=1.2)
+
+t
+
+#tmap_save(t,here('R','output','bx_map.png'))
+
+```
+
+### Plot results of probability model to leaflet map
+
+```{r}
+fit <- fit_model(m='prob') # classProbs = TRUE
+
+pred <- terra::predict(stack, fit$finalModel,
+                              type = "response",
+                              fun = function(model, ...) predict(model, ...)$nonnative)
+
+names(pred) <- c('Native','Nonnative')
+
+
+pred[ca<0.6] <- NA # mask pixels < 60% tree canopy
+
+pl2 <- c('#4dac26','#b8e186','#5356FF','#FDA403','#FF204E')
+
+w <- tmap_leaflet(
+  tm_shape(pred[2,,]) +
+    tm_raster(palette=pl2)
+)
+
+w
+
+#saveWidget(w,here('R','output','bk_prob.html'))
+```
+
+### Estimate Nonnative Acres By Probability Bracket
+
+```{r}
+counts.df <- data.frame(matrix(ncol=6,nrow=0))
+names(counts.df) <- c('boro','0-0.2','0.2-0.4','0.4-0.6','0.6-0.8','0.8-1')
+
+pred.df <- as.data.frame(pred)
+first <- sum(pred.df$prediction.nonnative>0 & pred.df$prediction.nonnative < 0.2,na.rm=TRUE)
+second <- sum(pred.df$prediction.nonnative>=0.2 & pred.df$prediction.nonnative < 0.4,na.rm=TRUE)
+third <- sum(pred.df$prediction.nonnative>=0.4 & pred.df$prediction.nonnative < 0.6,na.rm=TRUE)
+fourth <- sum(pred.df$prediction.nonnative>=0.6 & pred.df$prediction.nonnative < 0.8,na.rm=TRUE)
+fifth <- sum(pred.df$prediction.nonnative>=0.8 & pred.df$prediction.nonnative <= 1,na.rm=TRUE)
+
+# function to get acres from 30m pixels
+get_acres <- function(x){(x * 900)/4047}
+
+new_row <- lapply(c(first,second,third,fourth,fifth),FUN=get_acres)
+new_row <- c(boro,new_row)
+
+counts.df <- rbind(counts.df,new_row)
+
+# summarize mean and standard deviation of acres
+
+counts.summary <- counts.df %>%
+  group_by(boro) %>%
+  summarize(mean.2 = mean(`0-0.2`),
+         mean.4 = mean(`0.2-0.4`),
+         mean.6 = mean(`0.4-0.6`),
+         mean.8 = mean(`0.6-0.8`),
+         mean.1 = mean(`0.8-1`),
+         sd.2 = sd(`0-0.2`),
+         sd.4 = sd(`0.2-0.4`),
+         sd.6 = sd(`0.4-0.6`),
+         sd.8 = sd(`0.6-0.8`),
+         sd.1 = sd(`0.8-1`),
+         mean.total = mean(total))
+```
+
+

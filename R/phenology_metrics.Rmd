@@ -1,0 +1,681 @@
+---
+title: "Extracting Phenology Metrics from Satellite Data"
+output: html_document
+date: "2024-02-19"
+---
+
+```{r setup, include=FALSE}
+
+
+library(sf)
+library(magrittr)
+library(dplyr)
+library(rstac)
+library(terra)
+library(gdalcubes)
+library(stars)
+library(tmap)
+library(htmlwidgets)
+library(here)
+
+
+here::i_am('R/phenology_metrics.Rmd')
+
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+### Define functions to extract phenology metrics from stars object
+
+```{r}
+
+mean2 <- function(x) if(all(is.na(x))) NA else mean(x, na.rm = TRUE)
+
+# get point of greatest increase in TDVI
+get_sos <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    d <- (diff(impute.p))
+    sos <- which(d==max(d,na.rm=TRUE))
+    return(sos+60)
+    
+  }}
+
+# get point of greatest decrease in TDVI
+get_eos <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    
+    d <- (diff(impute.p))
+    eos <- which(d==min(d,na.rm=TRUE))
+    return(eos+60)
+    
+  }}
+
+# get maximum TDVI
+get_peak <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    peak <- max(impute.p, na.rm=TRUE)
+
+    return(peak)
+    
+  }}
+
+# get point of maximum TDVI
+get_pop <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    peak <- max(impute.p, na.rm=TRUE)
+    pop <- which(impute.p==peak)
+    
+    return(pop+60)
+    
+  }}
+
+# get number of days that TDVI > 80% of maximum (length of season 2)
+get_los2 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    peak <- max(impute.p, na.rm=TRUE)
+    los <- which(impute.p > (0.80 * peak))   
+    los2 <- los[length(los)] - los[1]
+    
+    return(los2)
+    
+  }}
+
+# get number of days between TDVI reaching 25% of greenup and 25% of senescence
+get_los3 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1] # point where increased by 25% of amplitude
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]     # point where decreased by 25% of amplitude
+    los3 <- s2 - s1
+    
+    return(los3)
+    
+  }}
+
+# get average change in TDVI during spring greenup 
+get_av_diff_greenup <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1] # point where increased by 25% of amplitude
+    
+    greenup <- diff(impute.p)[seq(s1,s1+30)]  
+    av_greenup_diff <- mean(greenup,na.rm=TRUE)  # average difference during green up and senescence
+    
+    
+    return(av_greenup_diff)
+    
+  }}
+
+# get average change in TDVI during fall senescence 
+get_av_diff_senes <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+    
+    senes <- diff(impute.p)[seq(s2,s2+30)]
+    av_sen_diff <- mean(senes,na.rm=TRUE)  # average difference during green up and senescence
+    
+    
+    return(av_sen_diff)
+    
+  }}
+
+# get springtime amplitude
+get_spring_amp <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
+   
+    
+    spring <- impute.p[seq(1,s1+30)] 
+    spring_amp <- max(spring,na.rm=TRUE) - min(spring,na.rm=TRUE)
+    
+    return(spring_amp)
+    
+  }}
+
+# get fall amplitude
+get_fall_amp <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+   
+    
+   fall <- impute.p[seq(s2,length(impute.p))] 
+    fall_amp <- max(fall,na.rm=TRUE) - min(fall,na.rm=TRUE)
+    
+    return(fall_amp)
+    
+  }}
+
+
+# get spring standard deviation
+get_spring_sd <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
+   
+    
+    spring <- impute.p[seq(1,s1+30)] 
+    spring_sd <- sd(spring,na.rm=TRUE)
+    
+    return(spring_sd)
+    
+  }}
+
+# get fall standard deviation
+get_fall_sd <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+   
+    
+   fall <- impute.p[seq(s2,length(impute.p))] 
+    fall_sd <- sd(fall,na.rm=TRUE)
+    
+    return(fall_sd)
+    
+  }}
+
+# get 1st quartile of spring TDVI
+get_spring_25 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
+   
+    
+    spring <- impute.p[seq(1,s1+30)] 
+    spring_q <- stats::quantile(spring,probs = c(.25),na.rm=TRUE)
+    
+    return(spring_q)
+    
+  }}
+
+# second quartile of spring TDVI
+get_spring_5 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
+   
+    
+    spring <- impute.p[seq(1,s1+30)] 
+    spring_q <- quantile(spring,probs = c(.5),na.rm=TRUE)
+    
+    return(spring_q)
+    
+  }}
+
+# third quartile of spring TDVI
+get_spring_75 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
+   
+    
+    spring <- impute.p[seq(1,s1+30)] 
+    spring_q <- quantile(spring,probs = c(.75),na.rm=TRUE)
+    
+    return(spring_q)
+    
+  }}
+
+# first quartile of fall TDVI
+get_fall_25 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+   
+    
+   fall <- impute.p[seq(s2,length(impute.p))] 
+     fall_q <- quantile(fall,probs = c(.25),na.rm=TRUE)
+    
+    return(fall_q)
+    
+  }}
+
+# second quartile of fall TDVI
+get_fall_5 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+   
+    
+   fall <- impute.p[seq(s2,length(impute.p))] 
+     fall_q <- quantile(fall,probs = c(.5),na.rm=TRUE)
+    
+    return(fall_q)
+    
+  }}
+
+# third quartile of fall TDVI
+get_fall_75 <- function(p){
+  if (all(is.na(p)))
+    {return(NA)}
+  else{
+    # smooth and impute ts using spline
+    x <- ts(p)
+    x.fill <- zoo::na.spline(x)
+    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
+    impute.p <- x.smooth$y
+    
+    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
+    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
+    s2 <- s[length(s)]
+   
+    
+   fall <- impute.p[seq(s2,length(impute.p))] 
+     fall_q <- quantile(fall,probs = c(.75),na.rm=TRUE)
+    
+    return(fall_q)
+    
+  }}
+
+
+```
+
+### Read in an inspect vector point data of sample sites
+
+```{r}
+
+# Natual Areas Conservancy tree species dataset
+p <- read_sf(here('data','NACPlots_WithInvIndex4.shp')) %>%
+  st_transform(26918)
+
+# points with all native species
+p.1 <- filter(p,InvIndex==1)
+# points with mixed species, mostly native
+p.2 <- filter(p,InvIndex==2)
+# points with mixed species, mostly nonnative
+p.3 <- filter(p,InvIndex==3)
+# points with all nonnative species
+p.4 <- filter(p,InvIndex==4)
+# points with no vegetation
+p.0 <- filter(p,InvIndex==0)
+
+# boundaries of NYC parks
+pk <- read_sf(here('data','parks.shp')) %>%
+  st_transform(26918)
+
+# boundaroes of NYC boros
+b <- read_sf(here('data','bb.shp')) %>%
+  filter(boro_name=='Queens') %>%     #### specify boro you want; could do whole city at once if you have sufficient RAM; 8 GB not enough!
+  st_transform(26918)
+#
+pk1 <- st_filter(pk,b,.predicate=st_intersects)  # get all parks in boro
+# # 
+pk <- st_filter(pk,p,.predicate=st_intersects)  # get all parks in boro with points in them
+# # 
+# # pk <- pk %>% filter(!grepl(c('Idlewild'),park_name)) %>%
+# #         filter(!grepl(c('Spring Creek'),park_name)) %>%
+# #   filter(!grepl(c('Jamaica'),park_name)) %>%
+# #            filter(!grepl(c('Belt Parkway'),park_name))
+# # 
+# # pk <- rbind(pk2,filter(pk1,grepl(c('Spring Creek'),park_name)),filter(pk1,grepl(c('Idlewild'), filter(pk1,grepl(c('Idlewild'),park_name)) %>%
+# #                 filter(!grepl(c('Belt Parkway'),park_name) %>%                                           
+#                                                                                   
+# #pk.filter <- rbind(filter(pk1,grepl(c('Park$'),landuse)),filter(pk1,grepl(c('Nature Area'),landuse)))
+#                     
+# 
+# #pk <- rbind(pk.filter[pk.filter$shape_area >= 200000,],filter(pk1,grepl(c('Parkway'),landuse)))
+# 
+pk.1 <- st_filter(p.1,pk,.predicate=st_within)
+pk.2 <- st_filter(p.2,pk,.predicate=st_within)
+pk.3 <- st_filter(p.3,pk,.predicate=st_within)
+pk.4 <- st_filter(p.4,pk,.predicate=st_within)
+pk.0 <- st_filter(p.0,pk,.predicate=st_within)
+
+# plot results of filtering
+t <- tmap_leaflet(
+tm_shape(pk.1) +
+  tm_dots(size = 0.02, col = 'red') +
+tm_shape(pk.2) +
+tm_dots(size = 0.02, col = 'purple') +
+tm_shape(pk.3) +
+tm_dots(size = 0.02, col = 'darkgreen') +
+  tm_shape(pk.4) +
+  tm_dots(size = 0.02, col = 'blue') +
+     tm_shape(pk) +
+  tm_borders(lwd = 1, col = 'green') +
+  tm_add_legend(type='fill',labels=c('All Native Species','Mixed/Mostly Natives','Mixed/Mostly Nonnatives','All Nonnative Species'),col=c('red','purple','darkgreen','blue'),shape='circle') +
+tm_layout(frame = F))
+
+t
+
+#saveWidget(t,here('R','output','NAC_plots.html'))
+```
+
+### Access and extract satellite data
+
+```{r}
+
+#### functions to a) query NASA Earth Data API b) extract March-December time series of TDVI for three years c) merge into single time series###
+
+## this is how NASA API does authentication:
+library(earthdatalogin)
+edl_netrc()   # input your username and password as arguments to this function
+
+# define cloud mask specific to harmonized landsat/sentinel-2 product
+cloud_mask <- image_mask("Fmask", values=1)
+
+## Function to query API for red and near infrared Bands for given time period
+get_hls_collection <- function(start,end){
+s_obj <- stac("https://cmr.earthdata.nasa.gov/stac/LPCLOUD")
+  
+  #query for hls data
+  it_obj1 <- s_obj %>%
+    stac_search(collections = "HLSS30.v2.0",    # limit search to Sentinel-2 catalog only
+                bbox = bbox1,      
+                datetime = paste(start,end, sep = "/")
+    ) %>%
+    post_request() %>%
+  items_fetch() %>%
+  items_filter(filter_fn = \(x) {x[["eo:cloud_cover"]] < 30})  # filter for cloud cover < 30%
+  
+
+  
+collection <- stac_image_collection(it_obj1$features, asset_names=c('B04','B08','Fmask'))  # specify red (B04) and near infrared (B08) bands
+return(collection)
+}
+
+## Function to extract time series of TDVI and return stars object cropped to given boundary
+get_seasonal_ts <-function(vstart,vend,collection){
+
+view <- cube_view(srs = srs,  extent = list(t0 = vstart, t1 = vend,
+                    left=bbox2['xmin'], right=bbox2['xmax'],top=bbox2['ymax'], bottom=bbox2['ymin']),
+                    dx = res, dy = res, dt = timestep, aggregation = "median", resampling = "average")
+
+r <- raster_cube(collection,view,cloud_mask) %>%
+    select_bands(c('B04','B08')) %>%
+    apply_pixel('1.5*((B08-B04)/(B08^2+B04+0.5)^0.5)','TDVI') %>%   # formula for TDVI applied to each pixel (server side)
+    st_as_stars() %>%
+    st_crop(boundary)
+
+return(r)
+
+}
+
+## Function to convert stars object to terra with standardized dates to enable merging
+create_terra <- function(stars_obj,time_stars){
+  terra.rast <- rast(stars_obj)
+  names(terra.rast) <- st_get_dimension_values(stars_obj,3)
+  
+  dates <- st_get_dimension_values(time_stars,3) %>%
+  strptime(format='%Y-%m-%d')
+  
+  terra::time(terra.rast) <- dates
+  return(terra.rast)
+}
+
+### Call above functions to query API, extract TDVI time series, and convert to terra, then merge terra objects into single time series.
+get_time_series <- function(start,end,dates){
+  
+  s_collection <- get_hls_collection(start_date,end_date)
+  
+  # get daily time series data
+  ts.1 <- get_seasonal_ts(dates[1],dates[2],s_collection)
+  ts.2 <- get_seasonal_ts(dates[3],dates[4],s_collection)
+  ts.3 <- get_seasonal_ts(dates[5],dates[6],s_collection)
+  
+  # convert to terra
+  time_stars <- ts.1
+  ts.1t <- create_terra(ts.1,time_stars)
+  ts.2t <- create_terra(ts.2,time_stars)
+  ts.3t <- create_terra(ts.3,time_stars)
+  
+  # merge into one time series
+  x <- sds(ts.1t,ts.2t)
+  ts <- mergeTime(x,fun=mean2)  # this step is memory intensive. More than 8GB RAM may be necessary, depending on size of rasters.
+  
+  terra::time(ts) <- strptime(names(ts),format='%Y-%m-%d')
+  return(ts)
+}
+
+
+
+
+```
+
+
+```{r}
+# define parameters for query
+
+# time frame of API query
+start_date <- "2021-03-01"
+end_date <- "2023-12-31"
+
+# bounding box in long/lat for API query
+bbox.4326 <- st_bbox(st_transform(pk,4326))
+bbox1 <- as.numeric(as.character(bbox.4326))
+# bounding box in projected coordinate system for cube_view() and raster_cube()
+bbox2 <- st_bbox(pk)
+# projected coordinate system
+srs <- 'EPSG:26918'
+# pixel resolution (30m is native resolution for harmonized product)
+res <- 30
+# time step of time series set to daily
+timestep <- 'P1D'
+# boundaries to crop stars object to
+boundary <- pk
+
+# time frame of each individual growing season
+dates <- c("2021-03-01","2021-12-31","2022-03-01","2022-12-31","2023-03-01","2023-12-31")
+
+```
+
+
+```{r}
+# run query to produce a 3-year composite growing season daily time series of TDVI as a terra object
+##### this could take 30 min or more depending on size of rasters ##############
+ts <- get_time_series(start_date,end_date,dates)
+```
+
+### Apply functions to derive phenology metrics
+
+```{r}
+# convert terra to stars
+ts.stars <- st_as_stars(ts)
+
+# extract phenological metrics
+sos <- st_apply(ts.stars,c(1,2),get_sos)
+
+eos <- st_apply(ts.stars,c(1,2),get_eos)
+
+los1 <- eos - sos
+
+peak <- st_apply(ts.stars,c(1,2),get_peak)
+
+pop <- st_apply(ts.stars,c(1,2),get_pop)
+
+los2 <- st_apply(ts.stars,c(1,2),get_los2)
+
+los3 <- st_apply(ts.stars,c(1,2),get_los3)
+
+av_diff_greenup <- st_apply(ts.stars,c(1,2),get_av_diff_greenup)
+
+av_diff_senes <- st_apply(ts.stars,c(1,2),get_av_diff_senes)
+
+spring_amp <- st_apply(ts.stars,c(1,2),get_spring_amp)
+
+fall_amp <- st_apply(ts.stars,c(1,2),get_fall_amp)
+
+spring_sd <- st_apply(ts.stars,c(1,2),get_spring_sd)
+
+fall_sd <- st_apply(ts.stars,c(1,2),get_fall_sd)
+
+spring_q1 <- st_apply(ts.stars,c(1,2),get_spring_25)
+
+spring_q2 <- st_apply(ts.stars,c(1,2),get_spring_5)
+
+spring_q3 <- st_apply(ts.stars,c(1,2),get_spring_75)
+
+fall_q1 <- st_apply(ts.stars,c(1,2),get_fall_25)
+
+fall_q2 <- st_apply(ts.stars,c(1,2),get_fall_5)
+
+fall_q3 <- st_apply(ts.stars,c(1,2),get_fall_75)
+
+# combine metrics into a single raster
+stack <- c(sos,eos,los1,los2,los3,peak,pop,av_diff_greenup,av_diff_senes,spring_amp,fall_amp,spring_sd,fall_sd,spring_q1,spring_q2,spring_q3,fall_q1,fall_q2,fall_q3)
+
+
+
+```
+
+```{r}
+# wite output ot disk
+stack <- rast(stack)
+writeRaster(stack,here('R','si_metrics.tif'))
+
+```
+
+```{r}
+# remove objects from memory
+rm(sos,eos,los1,los2,los3,peak,pop,av_diff_greenup,av_diff_senes,spring_amp,fall_amp,spring_sd,fall_sd,spring_q1,spring_q2,spring_q3,fall_q1,fall_q2,fall_q3)
+rm(stack,ts,ts.stars)
+```
+
+
+
