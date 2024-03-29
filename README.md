@@ -59,7 +59,7 @@ The all-species model had a highly imbalanced training data (927 native vs. 125 
 
 Recall shows the percentage of pixels in each category correctly identified by the model. The down-sampled model performs better in this task, correctly identifying about 75% of total pixels in each category. The up-sampled model was able to identify less than 25% of nonnative pixels.
 
-Recall for all-species model using down-sampling (right) or up-sampling (left)      |
+Recall for all-species model using down-sampling (left) or up-sampling (right)      |
 :-------------------------:|
 ![](./images/recall_allspecies_plot.png)
 
@@ -67,7 +67,7 @@ Recall for all-species model using down-sampling (right) or up-sampling (left)  
 
 Precision shows how many predictions in each category were correct.  In this case, the up-sampled model performs better, with 60% of nonnative predictions and 90% of native predictions being correct. 
 
-Precision for all-species model using down-sampling (right) or up-sampling (left)      |
+Precision for all-species model using down-sampling (left) or up-sampling (right)      |
 :-------------------------:|
 ![](./images/precision_allspecies_plot.png)
 
