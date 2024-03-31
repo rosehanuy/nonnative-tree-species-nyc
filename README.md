@@ -1,6 +1,6 @@
 ## A Phenology-Based Method of Locating Nonnative Tree Species in NYC
  
- I explored using phenology metrics derived from satellite data to parse native and nonnative tree species in New York City. In the temperate climate of the northeastern US, most of our tree species are deciduous. Nonnative species tend to follow a phenological cycle that is distinct from native species, leafing out earlier in the spring and losing their leaves later in the fall. Phenological signals could potentially be used to distinguish between these two types of tree species. This use of satellite data could supplment field surveys to support the efforts of forest managers in monitoring the presence of invasive species. 
+ I explored using phenology metrics derived from satellite data to parse native and nonnative tree species in New York City. In the temperate climate of the northeastern US, most of our tree species are deciduous. Nonnative species tend to follow a phenological cycle that is distinct from native species, leafing out earlier in the spring and losing their leaves later in the fall. Phenological signals could potentially be used to distinguish between these two types of tree species. This remote sensing method could supplement field surveys for monitoring the presence of invasive species. 
 
 ### Data
 
