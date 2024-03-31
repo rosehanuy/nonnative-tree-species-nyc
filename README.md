@@ -25,13 +25,29 @@ Number of Plots for Each Nonnative Species          |
 
 ### Methods
 
-I trained a series of random forest models using the `ranger` and `caret` R packages to classify forested pixels as either native or nonnative, using individual native species as the native category. Next, I trained a model that used all 43 different native species in the dataset as the native category. My code for this process can be found [here](./R/train_random_forest_models.Rmd)
+Sentinel-2 imagery is captured every five days, but in practice, usable imagery is available less frequently due to cloud cover. In order to create rich time series of growing season TDVI, I extracted TDVI time series for three consecutive years and then merged them into a single time series. I then smoothed the time series for each pixel using a cubic spline function to produce daily time series of TDVI like the ones shown below.
+
+Examples of the smoothed, interpolated TDVI time series for two pixels containing predominantly Oak and Black Locust trees. The colored dots represent the start and end of the growing season.          |
+:-------------------------:|
+![](./images/pheno_plot.png)
+
+
+I [calculated](./R/phenology_metrics.Rmd) 19 different phenology metrics, such as Length of Growing Season (defined three different ways), rate of spring greenup and fall senescence, peak TDVI and point of peak TDVI. The plots below visualize some of these metrics. 
+
+Three definitions of the growing season          | 
+:-------------------------:|
+![](./images/los_plot.png)
+
+Periods of spring Greenup and Fall Senescence          |
+:-------------------------:|
+![](./images/greenup_plot.png)
+
+
+These metrics, along with spectral band information from spring and fall, were used as input to series of random forest models. I first trained the models to classify forested pixels as either native or nonnative, using individual native species as the native category. Next, I trained a model that used all 43 different native species in the dataset as the native category. My code for this process can be found [here](./R/train_random_forest_models.Rmd)
 
 To train each model, data were split into training (70%) and testing (30%) subsets. Each model was trained and tested using 10-fold cross-validation. Resampling was conducted within cross-validation using either up-sampling or down-sampling to try and mitigate class imbalance in the training data. 
 
 Each model was trained and tested five times and the mean accuracy metrics were recorded. Precision, recall, and F1 were the metrics I used to assess the models' performance. 
-
-I used the same set of 40 variables derived from 30m resolution satellite data to train each model. The variables were made up of spectral bands from spring and fall, as well as phenology metrics extracted from a growing season time series of TDVI (a measure of vegetation greenness). For the code used to derive the phenology metrics, see [this notebook](./R/phenology_metrics.Rmd).
 
 Finally, I [used the all-species model](./R/classify_nonnative_species_nyc.Rmd) to produce maps predicting the locations of nonnative species throughout the city's forested areas. 
 
