@@ -552,7 +552,7 @@ create_terra <- function(stars_obj,time_stars){
 ### Call above functions to query API, extract TDVI time series, and convert to terra, then merge terra objects into single time series.
 get_time_series <- function(start,end,dates){
   
-  s_collection <- get_hls_collection(start_date,end_date)
+  s_collection <- get_hls_collection(start,end)
   
   # get daily time series data
   ts.1 <- get_seasonal_ts(dates[1],dates[2],s_collection)
