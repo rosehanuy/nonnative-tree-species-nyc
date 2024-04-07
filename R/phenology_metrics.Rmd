@@ -26,111 +26,40 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```
 
-### Define functions to extract phenology metrics from stars object
+### Define function to extract phenology metrics from terra object
 
 ```{r}
 
 mean2 <- function(x) if(all(is.na(x))) NA else mean(x, na.rm = TRUE)
 
-# get point of greatest increase in TDVI
-get_sos <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
+smooth_ts <- function(p){   
     x <- ts(p)
     x.fill <- zoo::na.spline(x)
     x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
     impute.p <- x.smooth$y
+    return(impute.p)
+}
+
+get_metrics <- function(p,n=90){
+  if (all(is.na(p)))
+    {return(matrix(NA,ncol=1,nrow=22))}
+  else{
+    # smooth and impute ts using spline
+    impute.p <- smooth_ts(p)
     
     d <- (diff(impute.p))
     sos <- which(d==max(d,na.rm=TRUE))
-    return(sos+60)
+    sos <- sos + n
     
-  }}
-
-# get point of greatest decrease in TDVI
-get_eos <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    
-    d <- (diff(impute.p))
     eos <- which(d==min(d,na.rm=TRUE))
-    return(eos+60)
+    eos <- eos + n
     
-  }}
-
-# get maximum TDVI
-get_peak <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
+    los1 <- eos - sos
     
     peak <- max(impute.p, na.rm=TRUE)
-
-    return(peak)
     
-  }}
-
-# get point of maximum TDVI
-get_pop <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    peak <- max(impute.p, na.rm=TRUE)
     pop <- which(impute.p==peak)
-    
-    return(pop+60)
-    
-  }}
-
-# get number of days that TDVI > 80% of maximum (length of season 2)
-get_los2 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    peak <- max(impute.p, na.rm=TRUE)
-    los <- which(impute.p > (0.80 * peak))   
-    los2 <- los[length(los)] - los[1]
-    
-    return(los2)
-    
-  }}
-
-# get number of days between TDVI reaching 25% of greenup and 25% of senescence
-get_los3 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
+    pop <- pop + n
     
     amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
     s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1] # point where increased by 25% of amplitude
@@ -138,280 +67,40 @@ get_los3 <- function(p){
     s2 <- s[length(s)]     # point where decreased by 25% of amplitude
     los3 <- s2 - s1
     
-    return(los3)
+    greenup <- d[seq(s1,s1+30)]  
+    av_greenup_diff <- mean(greenup,na.rm=TRUE)
     
-  }}
-
-# get average change in TDVI during spring greenup 
-get_av_diff_greenup <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1] # point where increased by 25% of amplitude
-    
-    greenup <- diff(impute.p)[seq(s1,s1+30)]  
-    av_greenup_diff <- mean(greenup,na.rm=TRUE)  # average difference during green up and senescence
-    
-    
-    return(av_greenup_diff)
-    
-  }}
-
-# get average change in TDVI during fall senescence 
-get_av_diff_senes <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-    
-    senes <- diff(impute.p)[seq(s2,s2+30)]
-    av_sen_diff <- mean(senes,na.rm=TRUE)  # average difference during green up and senescence
-    
-    
-    return(av_sen_diff)
-    
-  }}
-
-# get springtime amplitude
-get_spring_amp <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
-   
+    senes <- d[seq(s2,s2+30)]
+    av_sen_diff <- mean(senes,na.rm=TRUE)
     
     spring <- impute.p[seq(1,s1+30)] 
     spring_amp <- max(spring,na.rm=TRUE) - min(spring,na.rm=TRUE)
-    
-    return(spring_amp)
-    
-  }}
-
-# get fall amplitude
-get_fall_amp <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-   
-    
-   fall <- impute.p[seq(s2,length(impute.p))] 
-    fall_amp <- max(fall,na.rm=TRUE) - min(fall,na.rm=TRUE)
-    
-    return(fall_amp)
-    
-  }}
-
-
-# get spring standard deviation
-get_spring_sd <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
-   
-    
-    spring <- impute.p[seq(1,s1+30)] 
     spring_sd <- sd(spring,na.rm=TRUE)
     
-    return(spring_sd)
+    spring_05 <- stats::quantile(spring,probs = c(.25),na.rm=TRUE)
+    spring_25 <- stats::quantile(spring,probs = c(.25),na.rm=TRUE)
+    spring_5 <- stats::quantile(spring,probs = c(.5),na.rm=TRUE)
+    spring_75 <- stats::quantile(spring,probs = c(.75),na.rm=TRUE)
+    spring_90 <- stats::quantile(spring,probs = c(.90),na.rm=TRUE)
     
-  }}
-
-# get fall standard deviation
-get_fall_sd <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-   
-    
-   fall <- impute.p[seq(s2,length(impute.p))] 
+    fall <- impute.p[seq(s2,length(impute.p))] 
+    fall_amp <- max(fall,na.rm=TRUE) - min(fall,na.rm=TRUE)
     fall_sd <- sd(fall,na.rm=TRUE)
     
-    return(fall_sd)
+    fall_05 <- stats::quantile(fall,probs = c(.25),na.rm=TRUE)
+    fall_25 <- stats::quantile(fall,probs = c(.25),na.rm=TRUE)
+    fall_5 <- stats::quantile(fall,probs = c(.5),na.rm=TRUE)
+    fall_75 <- stats::quantile(fall,probs = c(.75),na.rm=TRUE)
+    fall_90 <- stats::quantile(fall,probs = c(.90),na.rm=TRUE)
+    
+    output <- matrix(c(sos,eos,los1,peak,pop,los3,av_greenup_diff,av_sen_diff,spring_amp,fall_amp,spring_sd,fall_sd,spring_05,
+                       spring_25,spring_5,spring_75,spring_90,fall_05,fall_25,fall_5,fall_75,fall_90),ncol=1,nrow=22)
+    
+    return(output)
     
   }}
+---
 
-# get 1st quartile of spring TDVI
-get_spring_25 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
-   
-    
-    spring <- impute.p[seq(1,s1+30)] 
-    spring_q <- stats::quantile(spring,probs = c(.25),na.rm=TRUE)
-    
-    return(spring_q)
-    
-  }}
-
-# second quartile of spring TDVI
-get_spring_5 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
-   
-    
-    spring <- impute.p[seq(1,s1+30)] 
-    spring_q <- quantile(spring,probs = c(.5),na.rm=TRUE)
-    
-    return(spring_q)
-    
-  }}
-
-# third quartile of spring TDVI
-get_spring_75 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s1 <- which(impute.p > min(impute.p,na.rm=TRUE) +(.25 * amp))[1]
-   
-    
-    spring <- impute.p[seq(1,s1+30)] 
-    spring_q <- quantile(spring,probs = c(.75),na.rm=TRUE)
-    
-    return(spring_q)
-    
-  }}
-
-# first quartile of fall TDVI
-get_fall_25 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-   
-    
-   fall <- impute.p[seq(s2,length(impute.p))] 
-     fall_q <- quantile(fall,probs = c(.25),na.rm=TRUE)
-    
-    return(fall_q)
-    
-  }}
-
-# second quartile of fall TDVI
-get_fall_5 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-   
-    
-   fall <- impute.p[seq(s2,length(impute.p))] 
-     fall_q <- quantile(fall,probs = c(.5),na.rm=TRUE)
-    
-    return(fall_q)
-    
-  }}
-
-# third quartile of fall TDVI
-get_fall_75 <- function(p){
-  if (all(is.na(p)))
-    {return(NA)}
-  else{
-    # smooth and impute ts using spline
-    x <- ts(p)
-    x.fill <- zoo::na.spline(x)
-    x.smooth <- stats::smooth.spline(time(x.fill),x.fill,spar=0.70)  
-    impute.p <- x.smooth$y
-    
-    amp <- max(impute.p,na.rm=TRUE) - min(impute.p,na.rm=TRUE)
-    s <- which(impute.p > max(impute.p,na.rm=TRUE) - (.25 * amp))
-    s2 <- s[length(s)]
-   
-    
-   fall <- impute.p[seq(s2,length(impute.p))] 
-     fall_q <- quantile(fall,probs = c(.75),na.rm=TRUE)
-    
-    return(fall_q)
-    
-  }}
 
 
 ```
@@ -439,7 +128,7 @@ p.0 <- filter(p,InvIndex==0)
 pk <- read_sf(here('data','parks.shp')) %>%
   st_transform(26918)
 
-# boundaroes of NYC boros
+# boundaries of NYC boros
 b <- read_sf(here('data','bb.shp')) %>%
   filter(boro_name=='Queens') %>%     #### specify boro you want; could do whole city at once if you have sufficient RAM; 8 GB not enough!
   st_transform(26918)
@@ -612,54 +301,11 @@ dates <- c("2021-03-01","2021-12-31","2022-03-01","2022-12-31","2023-03-01","202
 ts <- get_time_series(start_date,end_date,dates)
 ```
 
-### Apply functions to derive phenology metrics
+### Apply function to derive phenology metrics
 
 ```{r}
-# convert terra to stars
-ts.stars <- st_as_stars(ts)
-
-# extract phenological metrics
-sos <- st_apply(ts.stars,c(1,2),get_sos)
-
-eos <- st_apply(ts.stars,c(1,2),get_eos)
-
-los1 <- eos - sos
-
-peak <- st_apply(ts.stars,c(1,2),get_peak)
-
-pop <- st_apply(ts.stars,c(1,2),get_pop)
-
-los2 <- st_apply(ts.stars,c(1,2),get_los2)
-
-los3 <- st_apply(ts.stars,c(1,2),get_los3)
-
-av_diff_greenup <- st_apply(ts.stars,c(1,2),get_av_diff_greenup)
-
-av_diff_senes <- st_apply(ts.stars,c(1,2),get_av_diff_senes)
-
-spring_amp <- st_apply(ts.stars,c(1,2),get_spring_amp)
-
-fall_amp <- st_apply(ts.stars,c(1,2),get_fall_amp)
-
-spring_sd <- st_apply(ts.stars,c(1,2),get_spring_sd)
-
-fall_sd <- st_apply(ts.stars,c(1,2),get_fall_sd)
-
-spring_q1 <- st_apply(ts.stars,c(1,2),get_spring_25)
-
-spring_q2 <- st_apply(ts.stars,c(1,2),get_spring_5)
-
-spring_q3 <- st_apply(ts.stars,c(1,2),get_spring_75)
-
-fall_q1 <- st_apply(ts.stars,c(1,2),get_fall_25)
-
-fall_q2 <- st_apply(ts.stars,c(1,2),get_fall_5)
-
-fall_q3 <- st_apply(ts.stars,c(1,2),get_fall_75)
-
-# combine metrics into a single raster
-stack <- c(sos,eos,los1,los2,los3,peak,pop,av_diff_greenup,av_diff_senes,spring_amp,fall_amp,spring_sd,fall_sd,spring_q1,spring_q2,spring_q3,fall_q1,fall_q2,fall_q3)
-
+stack <- app(ts,get_metrics)
+names(metrics) <- c('sos','eos','los1','peak','pop','los3','av_greenup_diff','av_sen_diff','spring_amp','fall_amp','spring_sd','fall_sd','spring_05','spring_25','spring_5','spring_75','spring_90','fall_05','fall_25','fall_5','fall_75','fall_90')
 
 
 ```
@@ -673,8 +319,7 @@ writeRaster(stack,here('R','si_metrics.tif'))
 
 ```{r}
 # remove objects from memory
-rm(sos,eos,los1,los2,los3,peak,pop,av_diff_greenup,av_diff_senes,spring_amp,fall_amp,spring_sd,fall_sd,spring_q1,spring_q2,spring_q3,fall_q1,fall_q2,fall_q3)
-rm(stack,ts,ts.stars)
+
 ```
 
 
