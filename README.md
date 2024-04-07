@@ -32,7 +32,7 @@ Examples of the smoothed, interpolated TDVI time series for two pixels containin
 ![](./images/pheno_plot.png)
 
 
-I [calculated](./R/phenology_metrics.Rmd) 19 different phenology metrics, such as Length of Growing Season (defined three different ways), rate of spring greenup and fall senescence, peak TDVI and point of peak TDVI. The plots below visualize some of these metrics. 
+I [calculated](./R/phenology_metrics.Rmd) 22 different phenology metrics, such as Length of Growing Season, rate of spring greenup and fall senescence, peak TDVI and point of peak TDVI. The plots below visualize some of these metrics. 
 
 Three definitions of the growing season          | 
 :-------------------------:|
